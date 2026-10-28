@@ -1,103 +1,96 @@
-            disabled={busy || Number(fast) >= Number(slow)}
-            onClick={runBacktest}
-          >
-            {busy ? 'Testing…' : '▶ Run Backtest'}
-          </button>
 
-          {Number(fast) >= Number(slow) && (
-            <p className="error">
-              Fast period must be smaller than slow period.
-            </p>
-          )}
+import React, { useEffect, useRef, useState } from 'react'
+import {
+  createChart,
+  CandlestickSeries,
+  ColorType,
+} from 'lightweight-charts'
 
-          {result && (
-            <div className="results">
-              <div className="result-grid">
-                <div className="metric">
-                  <small>NET RETURN</small>
-                  <strong
-                    className={
-                      result.net_return_pct >= 0
-                        ? 'positive'
-                        : 'negative'
-                    }
-                  >
-                    {result.net_return_pct}%
-                  </strong>
-                </div>
+const API = (
+  import.meta.env.VITE_API_URL || 'https://marketforge-api-1ivz.onrender.com'
+).replace(/\/$/, '')
 
-                <div className="metric">
-                  <small>WIN RATE</small>
-                  <strong>{result.win_rate_pct}%</strong>
-                </div>
+const fmt = (n) =>
+  Number(n ?? 0).toLocaleString(undefined, {
+    maximumFractionDigits: 2,
+  })
 
-                <div className="metric">
-                  <small>TRADES</small>
-                  <strong>{result.trades}</strong>
-                </div>
+function CandleChart({ candles }) {
+  const host = useRef(null)
 
-                <div className="metric">
-                  <small>MAX DRAWDOWN</small>
-                  <strong className="negative">
-                    {result.max_drawdown_pct}%
-                  </strong>
-                </div>
-              </div>
+  useEffect(() => {
+    if (!host.current || !candles.length) return
 
-              <EquityCurve points={result.equity_curve} />
+    const chart = createChart(host.current, {
+      layout: {
+        background: { type: ColorType.Solid, color: '#0b0e14' },
+        textColor: '#aab3c5',
+      },
+      grid: {
+        vertLines: { color: '#171d29' },
+        horzLines: { color: '#171d29' },
+      },
+      rightPriceScale: { borderColor: '#293142' },
+      timeScale: {
+        borderColor: '#293142',
+        timeVisible: true,
+        secondsVisible: false,
+      },
+      crosshair: {
+        vertLine: { color: '#69758b' },
+        horzLine: { color: '#69758b' },
+      },
+      width: host.current.clientWidth,
+      height: host.current.clientHeight,
+    })
 
-              <div className="balance-row">
-                <span>Initial balance</span>
-                <strong>${fmt(result.initial_balance)}</strong>
-              </div>
+    const series = chart.addSeries(CandlestickSeries, {
+      upColor: '#26a69a',
+      downColor: '#ef5350',
+      borderUpColor: '#26a69a',
+      borderDownColor: '#ef5350',
+      wickUpColor: '#26a69a',
+      wickDownColor: '#ef5350',
+    })
 
-              <div className="balance-row">
-                <span>Ending balance</span>
-                <strong>${fmt(result.final_balance)}</strong>
-              </div>
+    series.setData(
+      candles.map((c) => ({
+        time: c.time,
+        open: c.open,
+        high: c.high,
+        low: c.low,
+        close: c.close,
+      }))
+    )
 
-              <div className="trade-head">TRADE DETAILS</div>
-              <TradeTable trades={result.trade_list} />
+    chart.timeScale().fitContent()
 
-              <p className="fine-print">
-                {result.data_source === 'historical_csv'
-                  ? `Historical CSV test · ${fmt(result.candles_tested)} candles. This is a simulation, not a guarantee of future results. Spread, slippage, financing and intrabar execution may not be fully modeled.`
-                  : 'Demo data only; not real market performance. Spread, slippage, financing and intrabar stops are not fully modeled.'}
-              </p>
-            </div>
-          )}
+    const onResize = () => {
+      if (host.current) {
+        chart.applyOptions({
+          width: host.current.clientWidth,
+        })
+      }
+    }
 
-          <div className="editor-preview">
-            <div className="editor-title">
-              STRATEGY SOURCE <span>Python engine</span>
-            </div>
+    window.addEventListener('resize', onResize)
 
-            <pre>{`# SMA crossover (demo)
-fast = SMA(close, ${fast || 9})
-slow = SMA(close, ${slow || 21})
-if crossover(fast, slow):
-    enter_long()
-if crossunder(fast, slow):
-    exit_long()`}</pre>
+    return () => {
+      window.removeEventListener('resize', onResize)
+      chart.remove()
+    }
+  }, [candles])
 
-            <div className="muted tiny">
-              Editor preview only — not yet an executable Pine-like language.
-            </div>
-          </div>
-        </aside>
-      </main>
-
-      {error && (
-        <div className="toast" role="alert">
-          {error}
-          <button onClick={() => setError('')}>×</button>
-        </div>
-      )}
-
-      <footer>
-        <span>MarketForge v0.2 · Backtest UI</span>
-        <span>Market data: {source === 'historical_csv' ? 'Historical CSV' : source === 'synthetic_demo' ? 'Synthetic demo' : source} · No orders are sent</span>
-      </footer>
-    </div>
-  )
+  return <div ref={host} className="chart-host" />
 }
+
+function EquityCurve({ points }) {
+  if (!points || points.length < 2) {
+    return (
+      <div className="equity-section">
+        <div className="equity-heading">EQUITY CURVE</div>
+        <p className="muted">
+          Not enough equity data to display.
+        </p>
+      </div>
+    )
