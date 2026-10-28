@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+node_modules/
+dist/
+release/
+.env
+
+# Local project archive
+MarketForge_iPhone_PWA_v2.zip
