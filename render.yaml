@@ -11,7 +11,8 @@ services:
         value: 3.12.8
       - key: CORS_ORIGINS
         value: "*"
-  - type: static
+  - type: web
+    runtime: static
     name: marketforge-mobile
     rootDir: frontend
     buildCommand: npm install && npm run build
