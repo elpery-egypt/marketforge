@@ -146,7 +146,7 @@ def run_sma_backtest(
         "max_drawdown_pct": round(max_drawdown, 2),
         "fee_bps_per_side": fee_bps,
         "assumptions": [
-            "Synthetic demo candles only; not market data.",
+            "Historical CSV candles; not live market data.",
             "Long-only SMA crossover; no short positions.",
             "Signals use completed candles and fill at next candle open.",
             "Entry and exit fees are modeled.",
