@@ -1,4 +1,3 @@
-
 from datetime import datetime, timedelta, timezone
 from math import sin, cos
 from pathlib import Path
@@ -11,7 +10,7 @@ from fastapi import FastAPI, HTTPException, UploadFile, File, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-from .strategy import run_sma_backtest
+from .strategy import run_sma_backtest, run_fair_pricing_backtest
 
 
 app = FastAPI(title="MarketForge API", version="0.3.0")
@@ -57,10 +56,22 @@ GOLD_CSV_PATH = (
 class BacktestRequest(BaseModel):
     symbol: str = "XAUUSD"
     timeframe: Timeframe = "15m"
+    strategy: Literal[
+        "sma_crossover",
+        "fair_pricing_reversion",
+    ] = "sma_crossover"
+
     fast_period: int = Field(default=9, ge=2, le=200)
     slow_period: int = Field(default=21, ge=3, le=500)
     initial_balance: float = Field(default=10000, gt=0)
     fee_bps: float = Field(default=2, ge=0, le=100)
+
+    ema_period: int = Field(default=50, ge=10, le=200)
+    atr_period: int = Field(default=14, ge=5, le=50)
+    stretch_atr: float = Field(default=0.8, ge=0.2, le=3.0)
+    stop_atr: float = Field(default=1.5, ge=0.5, le=5.0)
+    reward_risk: float = Field(default=1.0, ge=0.5, le=5.0)
+    swing_lookback: int = Field(default=5, ge=2, le=20)
 
 
 def parse_timestamp(value: str) -> int:
@@ -69,7 +80,6 @@ def parse_timestamp(value: str) -> int:
     if not value:
         raise ValueError("Empty timestamp")
 
-    # Unix seconds or milliseconds
     try:
         number = float(value)
         if number > 100_000_000_000:
@@ -79,7 +89,6 @@ def parse_timestamp(value: str) -> int:
     except ValueError:
         pass
 
-    # ISO timestamps and common date formats
     normalized = value.replace("Z", "+00:00")
 
     try:
@@ -184,7 +193,9 @@ def normalize_csv(contents: str) -> list[dict]:
             }
 
             if volume_col and row.get(volume_col):
-                candle["volume"] = max(0, int(float(row[volume_col])))
+                candle["volume"] = max(
+                    0, int(float(row[volume_col]))
+                )
 
             rows.append(candle)
 
@@ -202,7 +213,9 @@ def normalize_csv(contents: str) -> list[dict]:
 
     for previous, current in zip(rows, rows[1:]):
         if previous["time"] == current["time"]:
-            raise ValueError("Duplicate timestamps found in the CSV")
+            raise ValueError(
+                "Duplicate timestamps found in the CSV"
+            )
 
     return rows
 
@@ -264,7 +277,9 @@ def health():
 @app.post("/api/upload-csv")
 async def upload_csv(
     file: UploadFile = File(...),
-    symbol: str = Query(default="XAUUSD", min_length=1, max_length=20),
+    symbol: str = Query(
+        default="XAUUSD", min_length=1, max_length=20
+    ),
     timeframe: Timeframe = Query(default="15m"),
 ):
     if not file.filename or not file.filename.lower().endswith(".csv"):
@@ -273,7 +288,9 @@ async def upload_csv(
     raw = await file.read(25 * 1024 * 1024 + 1)
 
     if len(raw) > 25 * 1024 * 1024:
-        raise HTTPException(413, "CSV file must be 25 MB or smaller")
+        raise HTTPException(
+            413, "CSV file must be 25 MB or smaller"
+        )
 
     try:
         contents = raw.decode("utf-8-sig")
@@ -312,7 +329,9 @@ def candles(
     limit: int = 500,
 ):
     if not 50 <= limit <= 3000:
-        raise HTTPException(400, "limit must be between 50 and 3000")
+        raise HTTPException(
+            400, "limit must be between 50 and 3000"
+        )
 
     key = f"{symbol.upper()}:{timeframe}"
 
@@ -325,7 +344,9 @@ def candles(
 
     # Synthetic data is for chart previews only.
     step = STEP_MINUTES[timeframe]
-    now = datetime.now(timezone.utc).replace(second=0, microsecond=0)
+    now = datetime.now(timezone.utc).replace(
+        second=0, microsecond=0
+    )
     base = 2350.0 if symbol.upper() == "XAUUSD" else 100.0
     rows = []
     price = base
@@ -342,7 +363,9 @@ def candles(
 
         o = price
         c = max(0.01, o * (1 + change / 100))
-        wick = o * (0.0012 + abs(sin(i * 0.91)) * 0.001)
+        wick = o * (
+            0.0012 + abs(sin(i * 0.91)) * 0.001
+        )
         h = max(o, c) + wick
         l = max(0.01, min(o, c) - wick * 0.85)
 
@@ -352,7 +375,9 @@ def candles(
             "high": round(h, 4),
             "low": round(l, 4),
             "close": round(c, 4),
-            "volume": int(100 + abs(sin(i * 0.4)) * 900),
+            "volume": int(
+                100 + abs(sin(i * 0.4)) * 900
+            ),
         })
 
         price = c
@@ -367,9 +392,22 @@ def candles(
 
 @app.post("/api/backtest")
 def backtest(req: BacktestRequest):
-    if req.fast_period >= req.slow_period:
+    if (
+        req.strategy == "sma_crossover"
+        and req.fast_period >= req.slow_period
+    ):
         raise HTTPException(
             400, "fast_period must be smaller than slow_period"
+        )
+
+    if req.strategy == "fair_pricing_reversion" and (
+        req.symbol.upper() != "XAUUSD"
+        or req.timeframe != "15m"
+    ):
+        raise HTTPException(
+            400,
+            "Fair Pricing Reversion is currently enabled only "
+            "for XAUUSD on 15m.",
         )
 
     key = f"{req.symbol.upper()}:{req.timeframe}"
@@ -384,14 +422,31 @@ def backtest(req: BacktestRequest):
     dataset = uploaded_data[key]
     data = dataset["candles"]
 
-    result = run_sma_backtest(
-        data,
-        req.fast_period,
-        req.slow_period,
-        req.initial_balance,
-        req.fee_bps,
-    )
+    try:
+        if req.strategy == "fair_pricing_reversion":
+            result = run_fair_pricing_backtest(
+                data,
+                initial_balance=req.initial_balance,
+                fee_bps=req.fee_bps,
+                ema_period=req.ema_period,
+                atr_period=req.atr_period,
+                stretch_atr=req.stretch_atr,
+                stop_atr=req.stop_atr,
+                reward_risk=req.reward_risk,
+                swing_lookback=req.swing_lookback,
+            )
+        else:
+            result = run_sma_backtest(
+                data,
+                req.fast_period,
+                req.slow_period,
+                req.initial_balance,
+                req.fee_bps,
+            )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
+    result["strategy"] = req.strategy
     result["symbol"] = req.symbol.upper()
     result["timeframe"] = req.timeframe
     result["data_source"] = dataset["source"]
